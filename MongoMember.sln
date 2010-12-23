@@ -1,0 +1,26 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Visual Studio 2010
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MvcApplication", "example\MvcApplication.csproj", "{5F6F6591-FB8B-4DC2-BCEA-85D348E683B8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MongoMember", "src\MongoMember.csproj", "{06496C84-80A3-4F2B-B866-E4BED74A345E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5F6F6591-FB8B-4DC2-BCEA-85D348E683B8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5F6F6591-FB8B-4DC2-BCEA-85D348E683B8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5F6F6591-FB8B-4DC2-BCEA-85D348E683B8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5F6F6591-FB8B-4DC2-BCEA-85D348E683B8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{06496C84-80A3-4F2B-B866-E4BED74A345E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{06496C84-80A3-4F2B-B866-E4BED74A345E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{06496C84-80A3-4F2B-B866-E4BED74A345E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{06496C84-80A3-4F2B-B866-E4BED74A345E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
