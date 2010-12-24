@@ -1,102 +1,86 @@
-﻿using System;
-using System.Collections.Specialized;
-using System.Configuration;
+﻿using System.Web.Security;
 using System.Configuration.Provider;
+using System.Collections.Specialized;
+using System;
 using System.Data;
 using System.Data.Odbc;
+using System.Configuration;
 using System.Diagnostics;
-using System.Linq;
-using System.Linq.Expressions;
+using System.Web;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Web.Configuration;
-using System.Web.Security;
-using Norm;
-using Norm.Collections;
-using System.Collections.Generic;
+
+/*
+
+This provider works with the following schema for the table of user data.
+
+CREATE TABLE Users
+(
+  PKID Guid NOT NULL PRIMARY KEY,
+  Username Text (255) NOT NULL,
+  ApplicationName Text (255) NOT NULL,
+  Email Text (128) NOT NULL,
+  Comment Text (255),
+  Password Text (128) NOT NULL,
+  PasswordQuestion Text (255),
+  PasswordAnswer Text (255),
+  IsApproved YesNo, 
+  LastActivityDate DateTime,
+  LastLoginDate DateTime,
+  LastPasswordChangedDate DateTime,
+  CreationDate DateTime, 
+  IsOnLine YesNo,
+  IsLockedOut YesNo,
+  LastLockedOutDate DateTime,
+  FailedPasswordAttemptCount Integer,
+  FailedPasswordAttemptWindowStart DateTime,
+  FailedPasswordAnswerAttemptCount Integer,
+  FailedPasswordAnswerAttemptWindowStart DateTime
+)
+
+*/
 
 
 namespace Ludopoli.MongoMember
 {
-	public class Provider : MembershipProvider
+	public sealed class SampleMongoMembershipProvider : MembershipProvider
 	{
-		#region API
 
-		public override MembershipUser CreateUser(string username, string password, string email, string passwordQuestion, string passwordAnswer, bool isApproved, object providerUserKey, out MembershipCreateStatus status)
+		//
+		// Global connection string, generated password length, generic exception message, event log info.
+		//
+
+		private int newPasswordLength = 8;
+		private string eventSource = "OdbcMembershipProvider";
+		private string eventLog = "Application";
+		private string exceptionMessage = "An exception occurred. Please check the Event Log.";
+		private string connectionString;
+
+		//
+		// Used when determining encryption key values.
+		//
+
+		private MachineKeySection machineKey;
+
+		//
+		// If false, exceptions are thrown to the caller. If true,
+		// exceptions are written to the event log.
+		//
+
+		private bool pWriteExceptionsToEventLog;
+
+		public bool WriteExceptionsToEventLog
 		{
-			var args = new ValidatePasswordEventArgs(username, password, true); OnValidatingPassword(args);
-			if (args.Cancel) { status = MembershipCreateStatus.InvalidPassword; return null; }
-
-			if (RequiresUniqueEmail && GetUserNameByEmail(email) != "") {
-				status = MembershipCreateStatus.DuplicateEmail;
-				return null;
-			}
-
-			MembershipUser u = GetUser(username, false);
-
-			if (u == null) {
-				var createAt = DateTime.Now;
-
-				var usr = new Usr();
-				usr.Id = ObjectId.NewObjectId();
-				usr.Username = username;
-				usr.Password = EncodePassword(password);
-				usr.Email = email;
-				usr.PasswordQuestion = passwordQuestion;
-				usr.PasswordAnswer = EncodePassword(passwordAnswer);
-				usr.IsApproved = isApproved;
-				usr.CreationDate = createAt;
-				usr.LastPasswordChangedDate = createAt;
-				usr.LastActivityDate = createAt;
-				usr.ApplicationName = ApplicationName;
-				usr.IsLockedOut = false;
-				usr.LastLockedOutDate = createAt;
-				usr.FailedPasswordAnswerAttemptCount = 0;
-				usr.FailedPasswordAnswerAttemptWindowStart = createAt;
-				usr.FailedPasswordAttemptCount = 0;
-				usr.FailedPasswordAttemptWindowStart = createAt;
-
-				Db.Add(usr);
-			}
-
-			status = MembershipCreateStatus.Success;
-			return u;
+			get { return pWriteExceptionsToEventLog; }
+			set { pWriteExceptionsToEventLog = value; }
 		}
 
-		public override MembershipUser GetUser(string username, bool userIsOnline)
-		{
-			var usr = ByUserName(username);
 
-			if (usr != null && userIsOnline) {
-				usr.LastActivityDate = DateTime.Now;
-				Db.Save(usr);
-			}
-
-			return ToMembershipUser(usr);
-		}
-
-		public override bool ValidateUser(string username, string password)
-		{
-			var usr = ByUserName(username);
-
-			if (usr == null && usr.IsLockedOut)
-				return false;
-
-			var valid = usr.IsApproved && CheckPassword(password, usr.Password);
-
-			if (valid)
-				usr.LastLoginDate = DateTime.Now;
-			else
-				UpdateFailureCount(usr, FailurePassword);
-
-			Db.Save(usr);
-
-			return valid;
-		}
-
-		public override string ApplicationName { get; set; }
-		public override int PasswordAttemptWindow { get { return pPasswordAttemptWindow; } }
-		public override int MaxInvalidPasswordAttempts { get { return pMaxInvalidPasswordAttempts; } }
+		//
+		// System.Configuration.Provider.ProviderBase.Initialize Method
+		//
 
 		public override void Initialize(string name, NameValueCollection config)
 		{
@@ -118,7 +102,8 @@ namespace Ludopoli.MongoMember
 			// Initialize the abstract base class.
 			base.Initialize(name, config);
 
-			ApplicationName = GetConfigValue(config["applicationName"], System.Web.Hosting.HostingEnvironment.ApplicationVirtualPath);
+			pApplicationName = GetConfigValue(config["applicationName"],
+													  System.Web.Hosting.HostingEnvironment.ApplicationVirtualPath);
 			pMaxInvalidPasswordAttempts = Convert.ToInt32(GetConfigValue(config["maxInvalidPasswordAttempts"], "5"));
 			pPasswordAttemptWindow = Convert.ToInt32(GetConfigValue(config["passwordAttemptWindow"], "10"));
 			pMinRequiredNonAlphanumericCharacters = Convert.ToInt32(GetConfigValue(config["minRequiredNonAlphanumericCharacters"], "1"));
@@ -149,245 +134,31 @@ namespace Ludopoli.MongoMember
 					throw new ProviderException("Password format not supported.");
 			}
 
+			//
+			// Initialize OdbcConnection.
+			//
+
+			ConnectionStringSettings ConnectionStringSettings =
+			  ConfigurationManager.ConnectionStrings[config["connectionStringName"]];
+
+			if (ConnectionStringSettings == null || ConnectionStringSettings.ConnectionString.Trim() == "") {
+				throw new ProviderException("Connection string cannot be blank.");
+			}
+
+			connectionString = ConnectionStringSettings.ConnectionString;
+
 
 			// Get encryption and decryption key information from the configuration.
-			var cfg = WebConfigurationManager.OpenWebConfiguration(System.Web.Hosting.HostingEnvironment.ApplicationVirtualPath);
+			Configuration cfg =
+			  WebConfigurationManager.OpenWebConfiguration(System.Web.Hosting.HostingEnvironment.ApplicationVirtualPath);
 			machineKey = (MachineKeySection)cfg.GetSection("system.web/machineKey");
 
 			if (machineKey.ValidationKey.Contains("AutoGenerate"))
 				if (PasswordFormat != MembershipPasswordFormat.Clear)
-					throw new ProviderException("Hashed or Encrypted passwords are not supported with auto-generated keys.");
+					throw new ProviderException("Hashed or Encrypted passwords " +
+														 "are not supported with auto-generated keys.");
 		}
 
-		#endregion
-
-		#region private
-
-		const string FailurePassword = "password";
-		const string FailurePasswordAnswer = "passwordAnswer";
-		MachineKeySection machineKey;
-		Mongo Db;//= Mongo.Create(ConfigurationManager.ConnectionStrings["MongoDB"].ConnectionString);
-		int pPasswordAttemptWindow;
-		int pMaxInvalidPasswordAttempts;
-
-		void UpdateFailureCount(Usr usr, string failureType = FailurePassword)
-		{
-			var getFailureCount = new Func<int>(() => failureType == FailurePasswordAnswer ? usr.FailedPasswordAnswerAttemptCount : usr.FailedPasswordAttemptCount);
-			var setFailureCount = new Action<int>((val) => { if (failureType == FailurePasswordAnswer) { usr.FailedPasswordAnswerAttemptCount = val; } else { usr.FailedPasswordAttemptCount = val; } });
-			var getWindowStart = new Func<DateTime>(() => failureType == FailurePasswordAnswer ? usr.FailedPasswordAnswerAttemptWindowStart : usr.FailedPasswordAttemptWindowStart);
-			var setWindowStart = new Action<DateTime>((val) => { if (failureType == FailurePasswordAnswer) { usr.FailedPasswordAnswerAttemptWindowStart = val; } else { usr.FailedPasswordAttemptWindowStart = val; } });
-
-			var windowEnd = getWindowStart().AddMinutes(PasswordAttemptWindow);
-
-			if (getFailureCount() == 0 || DateTime.Now > windowEnd) {
-				setFailureCount(1);
-				setWindowStart(DateTime.Now);
-			}
-			else {
-				var nextFailureCount = getFailureCount() + 1;
-
-				if (nextFailureCount >= MaxInvalidPasswordAttempts) {
-					usr.IsLockedOut = true;
-					usr.LastLockedOutDate = DateTime.Now;
-				}
-				else {
-					setFailureCount(nextFailureCount);
-				}
-			}
-		}
-
-		bool CheckPassword(string password, string dbpassword)
-		{
-			string pass1 = password;
-			string pass2 = dbpassword;
-
-			switch (PasswordFormat) {
-				case MembershipPasswordFormat.Encrypted:
-					pass2 = UnEncodePassword(dbpassword);
-					break;
-				case MembershipPasswordFormat.Hashed:
-					pass1 = EncodePassword(password);
-					break;
-				default:
-					break;
-			}
-
-			if (pass1 == pass2) {
-				return true;
-			}
-
-			return false;
-		}
-
-		Usr ByUserName(string username)
-		{
-			var usr = Db.SingleOrDef<Usr>(u => u.Username == username && u.ApplicationName == ApplicationName);
-			return usr;
-		}
-
-		MembershipUser ToMembershipUser(Usr usr)
-		{
-			if (usr == null)
-				return null;
-
-			return new MembershipUser(this.Name, usr.Username, usr.Id, usr.Email,
-				usr.PasswordQuestion, usr.Comment, usr.IsApproved, usr.IsLockedOut,
-				usr.CreationDate, usr.LastLoginDate, usr.LastActivityDate, usr.LastPasswordChangedDate,
-				usr.LastLockedOutDate
-			);
-		}
-
-		#endregion
-
-		#region From MSDN example
-		void UpdateFailureCount(string username, string failureType)
-		{
-			OdbcConnection conn = new OdbcConnection(connectionString);
-			OdbcCommand cmd = new OdbcCommand("SELECT FailedPasswordAttemptCount, " +
-														 "  FailedPasswordAttemptWindowStart, " +
-														 "  FailedPasswordAnswerAttemptCount, " +
-														 "  FailedPasswordAnswerAttemptWindowStart " +
-														 "  FROM Users " +
-														 "  WHERE Username = ? AND ApplicationName = ?", conn);
-
-			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-			OdbcDataReader reader = null;
-			DateTime windowStart = new DateTime();
-			int failureCount = 0;
-
-			try {
-				conn.Open();
-
-				reader = cmd.ExecuteReader(CommandBehavior.SingleRow);
-
-				if (reader.HasRows) {
-					reader.Read();
-
-					if (failureType == "password") {
-						failureCount = reader.GetInt32(0);
-						windowStart = reader.GetDateTime(1);
-					}
-
-					if (failureType == "passwordAnswer") {
-						failureCount = reader.GetInt32(2);
-						windowStart = reader.GetDateTime(3);
-					}
-				}
-
-				reader.Close();
-
-				DateTime windowEnd = windowStart.AddMinutes(PasswordAttemptWindow);
-
-				if (failureCount == 0 || DateTime.Now > windowEnd) {
-					// First password failure or outside of PasswordAttemptWindow. 
-					// Start a new password failure count from 1 and a new window starting now.
-
-					if (failureType == "password")
-						cmd.CommandText = "UPDATE Users " +
-												"  SET FailedPasswordAttemptCount = ?, " +
-												"      FailedPasswordAttemptWindowStart = ? " +
-												"  WHERE Username = ? AND ApplicationName = ?";
-
-					if (failureType == "passwordAnswer")
-						cmd.CommandText = "UPDATE Users " +
-												"  SET FailedPasswordAnswerAttemptCount = ?, " +
-												"      FailedPasswordAnswerAttemptWindowStart = ? " +
-												"  WHERE Username = ? AND ApplicationName = ?";
-
-					cmd.Parameters.Clear();
-
-					cmd.Parameters.Add("@Count", OdbcType.Int).Value = 1;
-					cmd.Parameters.Add("@WindowStart", OdbcType.DateTime).Value = DateTime.Now;
-					cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-					cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-					if (cmd.ExecuteNonQuery() < 0)
-						throw new ProviderException("Unable to update failure count and window start.");
-				}
-				else {
-					if (failureCount++ >= MaxInvalidPasswordAttempts) {
-						// Password attempts have exceeded the failure threshold. Lock out
-						// the user.
-
-						cmd.CommandText = "UPDATE Users " +
-												"  SET IsLockedOut = ?, LastLockedOutDate = ? " +
-												"  WHERE Username = ? AND ApplicationName = ?";
-
-						cmd.Parameters.Clear();
-
-						cmd.Parameters.Add("@IsLockedOut", OdbcType.Bit).Value = true;
-						cmd.Parameters.Add("@LastLockedOutDate", OdbcType.DateTime).Value = DateTime.Now;
-						cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-						cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-						if (cmd.ExecuteNonQuery() < 0)
-							throw new ProviderException("Unable to lock out user.");
-					}
-					else {
-						// Password attempts have not exceeded the failure threshold. Update
-						// the failure counts. Leave the window the same.
-
-						if (failureType == "password")
-							cmd.CommandText = "UPDATE Users " +
-													"  SET FailedPasswordAttemptCount = ?" +
-													"  WHERE Username = ? AND ApplicationName = ?";
-
-						if (failureType == "passwordAnswer")
-							cmd.CommandText = "UPDATE Users " +
-													"  SET FailedPasswordAnswerAttemptCount = ?" +
-													"  WHERE Username = ? AND ApplicationName = ?";
-
-						cmd.Parameters.Clear();
-
-						cmd.Parameters.Add("@Count", OdbcType.Int).Value = failureCount;
-						cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-						cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-						if (cmd.ExecuteNonQuery() < 0)
-							throw new ProviderException("Unable to update failure count.");
-					}
-				}
-			}
-			catch (OdbcException e) {
-				if (WriteExceptionsToEventLog) {
-					WriteToEventLog(e, "UpdateFailureCount");
-
-					throw new ProviderException(exceptionMessage);
-				}
-				else {
-					throw e;
-				}
-			}
-			finally {
-				if (reader != null) { reader.Close(); }
-				conn.Close();
-			}
-		}
-
-		//
-		// Global connection string, generated password length, generic exception message, event log info.
-		//
-
-		private int newPasswordLength = 8;
-		private string eventSource = "OdbcMembershipProvider";
-		private string eventLog = "Application";
-		private string exceptionMessage = "An exception occurred. Please check the Event Log.";
-		private string connectionString;
-
-		//
-		// If false, exceptions are thrown to the caller. If true,
-		// exceptions are written to the event log.
-		//
-
-		private bool pWriteExceptionsToEventLog;
-
-		public bool WriteExceptionsToEventLog
-		{
-			get { return pWriteExceptionsToEventLog; }
-			set { pWriteExceptionsToEventLog = value; }
-		}
 
 		//
 		// A helper function to retrieve config values from the configuration file.
@@ -407,12 +178,20 @@ namespace Ludopoli.MongoMember
 		//
 
 
+		private string pApplicationName;
 		private bool pEnablePasswordReset;
 		private bool pEnablePasswordRetrieval;
 		private bool pRequiresQuestionAndAnswer;
 		private bool pRequiresUniqueEmail;
+		private int pMaxInvalidPasswordAttempts;
+		private int pPasswordAttemptWindow;
 		private MembershipPasswordFormat pPasswordFormat;
 
+		public override string ApplicationName
+		{
+			get { return pApplicationName; }
+			set { pApplicationName = value; }
+		}
 
 		public override bool EnablePasswordReset
 		{
@@ -438,7 +217,16 @@ namespace Ludopoli.MongoMember
 		}
 
 
+		public override int MaxInvalidPasswordAttempts
+		{
+			get { return pMaxInvalidPasswordAttempts; }
+		}
 
+
+		public override int PasswordAttemptWindow
+		{
+			get { return pPasswordAttemptWindow; }
+		}
 
 
 		public override MembershipPasswordFormat PasswordFormat
@@ -501,7 +289,7 @@ namespace Ludopoli.MongoMember
 			cmd.Parameters.Add("@Password", OdbcType.VarChar, 255).Value = EncodePassword(newPwd);
 			cmd.Parameters.Add("@LastPasswordChangedDate", OdbcType.DateTime).Value = DateTime.Now;
 			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 
 			int rowsAffected = 0;
@@ -554,7 +342,7 @@ namespace Ludopoli.MongoMember
 			cmd.Parameters.Add("@Question", OdbcType.VarChar, 255).Value = newPwdQuestion;
 			cmd.Parameters.Add("@Answer", OdbcType.VarChar, 255).Value = EncodePassword(newPwdAnswer);
 			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 
 			int rowsAffected = 0;
@@ -591,6 +379,109 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.CreateUser
 		//
 
+		public override MembershipUser CreateUser(string username,
+					string password,
+					string email,
+					string passwordQuestion,
+					string passwordAnswer,
+					bool isApproved,
+					object providerUserKey,
+					out MembershipCreateStatus status)
+		{
+			ValidatePasswordEventArgs args =
+			  new ValidatePasswordEventArgs(username, password, true);
+
+			OnValidatingPassword(args);
+
+			if (args.Cancel) {
+				status = MembershipCreateStatus.InvalidPassword;
+				return null;
+			}
+
+
+
+			if (RequiresUniqueEmail && GetUserNameByEmail(email) != "") {
+				status = MembershipCreateStatus.DuplicateEmail;
+				return null;
+			}
+
+			MembershipUser u = GetUser(username, false);
+
+			if (u == null) {
+				DateTime createDate = DateTime.Now;
+
+				if (providerUserKey == null) {
+					providerUserKey = Guid.NewGuid();
+				}
+				else {
+					if (!(providerUserKey is Guid)) {
+						status = MembershipCreateStatus.InvalidProviderUserKey;
+						return null;
+					}
+				}
+
+				OdbcConnection conn = new OdbcConnection(connectionString);
+				OdbcCommand cmd = new OdbcCommand("INSERT INTO Users " +
+						" (PKID, Username, Password, Email, PasswordQuestion, " +
+						" PasswordAnswer, IsApproved," +
+						" Comment, CreationDate, LastPasswordChangedDate, LastActivityDate," +
+						" ApplicationName, IsLockedOut, LastLockedOutDate," +
+						" FailedPasswordAttemptCount, FailedPasswordAttemptWindowStart, " +
+						" FailedPasswordAnswerAttemptCount, FailedPasswordAnswerAttemptWindowStart)" +
+						" Values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", conn);
+
+				cmd.Parameters.Add("@PKID", OdbcType.UniqueIdentifier).Value = providerUserKey;
+				cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+				cmd.Parameters.Add("@Password", OdbcType.VarChar, 255).Value = EncodePassword(password);
+				cmd.Parameters.Add("@Email", OdbcType.VarChar, 128).Value = email;
+				cmd.Parameters.Add("@PasswordQuestion", OdbcType.VarChar, 255).Value = passwordQuestion;
+				cmd.Parameters.Add("@PasswordAnswer", OdbcType.VarChar, 255).Value = EncodePassword(passwordAnswer);
+				cmd.Parameters.Add("@IsApproved", OdbcType.Bit).Value = isApproved;
+				cmd.Parameters.Add("@Comment", OdbcType.VarChar, 255).Value = "";
+				cmd.Parameters.Add("@CreationDate", OdbcType.DateTime).Value = createDate;
+				cmd.Parameters.Add("@LastPasswordChangedDate", OdbcType.DateTime).Value = createDate;
+				cmd.Parameters.Add("@LastActivityDate", OdbcType.DateTime).Value = createDate;
+				cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+				cmd.Parameters.Add("@IsLockedOut", OdbcType.Bit).Value = false;
+				cmd.Parameters.Add("@LastLockedOutDate", OdbcType.DateTime).Value = createDate;
+				cmd.Parameters.Add("@FailedPasswordAttemptCount", OdbcType.Int).Value = 0;
+				cmd.Parameters.Add("@FailedPasswordAttemptWindowStart", OdbcType.DateTime).Value = createDate;
+				cmd.Parameters.Add("@FailedPasswordAnswerAttemptCount", OdbcType.Int).Value = 0;
+				cmd.Parameters.Add("@FailedPasswordAnswerAttemptWindowStart", OdbcType.DateTime).Value = createDate;
+
+				try {
+					conn.Open();
+
+					int recAdded = cmd.ExecuteNonQuery();
+
+					if (recAdded > 0) {
+						status = MembershipCreateStatus.Success;
+					}
+					else {
+						status = MembershipCreateStatus.UserRejected;
+					}
+				}
+				catch (OdbcException e) {
+					if (WriteExceptionsToEventLog) {
+						WriteToEventLog(e, "CreateUser");
+					}
+
+					status = MembershipCreateStatus.ProviderError;
+				}
+				finally {
+					conn.Close();
+				}
+
+
+				return GetUser(username, false);
+			}
+			else {
+				status = MembershipCreateStatus.DuplicateUserName;
+			}
+
+
+			return null;
+		}
 
 
 
@@ -605,7 +496,7 @@ namespace Ludopoli.MongoMember
 					  " WHERE Username = ? AND Applicationname = ?", conn);
 
 			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 			int rowsAffected = 0;
 
@@ -720,7 +611,7 @@ namespace Ludopoli.MongoMember
 					  " WHERE LastActivityDate > ? AND ApplicationName = ?", conn);
 
 			cmd.Parameters.Add("@CompareDate", OdbcType.DateTime).Value = compareTime;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 			int numOnline = 0;
 
@@ -767,7 +658,7 @@ namespace Ludopoli.MongoMember
 					" WHERE Username = ? AND ApplicationName = ?", conn);
 
 			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 			string password = "";
 			string passwordAnswer = "";
@@ -822,6 +713,66 @@ namespace Ludopoli.MongoMember
 		}
 
 
+
+		//
+		// MembershipProvider.GetUser(string, bool)
+		//
+
+		public override MembershipUser GetUser(string username, bool userIsOnline)
+		{
+			OdbcConnection conn = new OdbcConnection(connectionString);
+			OdbcCommand cmd = new OdbcCommand("SELECT PKID, Username, Email, PasswordQuestion," +
+				  " Comment, IsApproved, IsLockedOut, CreationDate, LastLoginDate," +
+				  " LastActivityDate, LastPasswordChangedDate, LastLockedOutDate" +
+				  " FROM Users WHERE Username = ? AND ApplicationName = ?", conn);
+
+			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+			MembershipUser u = null;
+			OdbcDataReader reader = null;
+
+			try {
+				conn.Open();
+
+				reader = cmd.ExecuteReader();
+
+				if (reader.HasRows) {
+					reader.Read();
+					u = GetUserFromReader(reader);
+
+					if (userIsOnline) {
+						OdbcCommand updateCmd = new OdbcCommand("UPDATE Users " +
+									 "SET LastActivityDate = ? " +
+									 "WHERE Username = ? AND Applicationname = ?", conn);
+
+						updateCmd.Parameters.Add("@LastActivityDate", OdbcType.DateTime).Value = DateTime.Now;
+						updateCmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+						updateCmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+						updateCmd.ExecuteNonQuery();
+					}
+				}
+
+			}
+			catch (OdbcException e) {
+				if (WriteExceptionsToEventLog) {
+					WriteToEventLog(e, "GetUser(String, Boolean)");
+
+					throw new ProviderException(exceptionMessage);
+				}
+				else {
+					throw e;
+				}
+			}
+			finally {
+				if (reader != null) { reader.Close(); }
+
+				conn.Close();
+			}
+
+			return u;
+		}
 
 
 		//
@@ -950,7 +901,7 @@ namespace Ludopoli.MongoMember
 
 			cmd.Parameters.Add("@LastLockedOutDate", OdbcType.DateTime).Value = DateTime.Now;
 			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 			int rowsAffected = 0;
 
@@ -991,7 +942,7 @@ namespace Ludopoli.MongoMember
 					" FROM Users WHERE Email = ? AND ApplicationName = ?", conn);
 
 			cmd.Parameters.Add("@Email", OdbcType.VarChar, 128).Value = email;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 			string username = "";
 
@@ -1060,7 +1011,7 @@ namespace Ludopoli.MongoMember
 					" WHERE Username = ? AND ApplicationName = ?", conn);
 
 			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 			int rowsAffected = 0;
 			string passwordAnswer = "";
@@ -1096,7 +1047,7 @@ namespace Ludopoli.MongoMember
 				updateCmd.Parameters.Add("@Password", OdbcType.VarChar, 255).Value = EncodePassword(newPassword);
 				updateCmd.Parameters.Add("@LastPasswordChangedDate", OdbcType.DateTime).Value = DateTime.Now;
 				updateCmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-				updateCmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+				updateCmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 				rowsAffected = updateCmd.ExecuteNonQuery();
 			}
@@ -1140,7 +1091,7 @@ namespace Ludopoli.MongoMember
 			cmd.Parameters.Add("@Comment", OdbcType.VarChar, 255).Value = user.Comment;
 			cmd.Parameters.Add("@IsApproved", OdbcType.Bit).Value = user.IsApproved;
 			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = user.UserName;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 
 			try {
@@ -1164,8 +1115,211 @@ namespace Ludopoli.MongoMember
 		}
 
 
+		//
+		// MembershipProvider.ValidateUser
+		//
+
+		public override bool ValidateUser(string username, string password)
+		{
+			bool isValid = false;
+
+			OdbcConnection conn = new OdbcConnection(connectionString);
+			OdbcCommand cmd = new OdbcCommand("SELECT Password, IsApproved FROM Users " +
+					  " WHERE Username = ? AND ApplicationName = ? AND IsLockedOut = False", conn);
+
+			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+			OdbcDataReader reader = null;
+			bool isApproved = false;
+			string pwd = "";
+
+			try {
+				conn.Open();
+
+				reader = cmd.ExecuteReader(CommandBehavior.SingleRow);
+
+				if (reader.HasRows) {
+					reader.Read();
+					pwd = reader.GetString(0);
+					isApproved = reader.GetBoolean(1);
+				}
+				else {
+					return false;
+				}
+
+				reader.Close();
+
+				if (CheckPassword(password, pwd)) {
+					if (isApproved) {
+						isValid = true;
+
+						OdbcCommand updateCmd = new OdbcCommand("UPDATE Users SET LastLoginDate = ?" +
+																			 " WHERE Username = ? AND ApplicationName = ?", conn);
+
+						updateCmd.Parameters.Add("@LastLoginDate", OdbcType.DateTime).Value = DateTime.Now;
+						updateCmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+						updateCmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+						updateCmd.ExecuteNonQuery();
+					}
+				}
+				else {
+					conn.Close();
+
+					UpdateFailureCount(username, "password");
+				}
+			}
+			catch (OdbcException e) {
+				if (WriteExceptionsToEventLog) {
+					WriteToEventLog(e, "ValidateUser");
+
+					throw new ProviderException(exceptionMessage);
+				}
+				else {
+					throw e;
+				}
+			}
+			finally {
+				if (reader != null) { reader.Close(); }
+				conn.Close();
+			}
+
+			return isValid;
+		}
 
 
+		//
+		// UpdateFailureCount
+		//   A helper method that performs the checks and updates associated with
+		// password failure tracking.
+		//
+
+		private void UpdateFailureCount(string username, string failureType)
+		{
+			OdbcConnection conn = new OdbcConnection(connectionString);
+			OdbcCommand cmd = new OdbcCommand("SELECT FailedPasswordAttemptCount, " +
+														 "  FailedPasswordAttemptWindowStart, " +
+														 "  FailedPasswordAnswerAttemptCount, " +
+														 "  FailedPasswordAnswerAttemptWindowStart " +
+														 "  FROM Users " +
+														 "  WHERE Username = ? AND ApplicationName = ?", conn);
+
+			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+			OdbcDataReader reader = null;
+			DateTime windowStart = new DateTime();
+			int failureCount = 0;
+
+			try {
+				conn.Open();
+
+				reader = cmd.ExecuteReader(CommandBehavior.SingleRow);
+
+				if (reader.HasRows) {
+					reader.Read();
+
+					if (failureType == "password") {
+						failureCount = reader.GetInt32(0);
+						windowStart = reader.GetDateTime(1);
+					}
+
+					if (failureType == "passwordAnswer") {
+						failureCount = reader.GetInt32(2);
+						windowStart = reader.GetDateTime(3);
+					}
+				}
+
+				reader.Close();
+
+				DateTime windowEnd = windowStart.AddMinutes(PasswordAttemptWindow);
+
+				if (failureCount == 0 || DateTime.Now > windowEnd) {
+					// First password failure or outside of PasswordAttemptWindow. 
+					// Start a new password failure count from 1 and a new window starting now.
+
+					if (failureType == "password")
+						cmd.CommandText = "UPDATE Users " +
+												"  SET FailedPasswordAttemptCount = ?, " +
+												"      FailedPasswordAttemptWindowStart = ? " +
+												"  WHERE Username = ? AND ApplicationName = ?";
+
+					if (failureType == "passwordAnswer")
+						cmd.CommandText = "UPDATE Users " +
+												"  SET FailedPasswordAnswerAttemptCount = ?, " +
+												"      FailedPasswordAnswerAttemptWindowStart = ? " +
+												"  WHERE Username = ? AND ApplicationName = ?";
+
+					cmd.Parameters.Clear();
+
+					cmd.Parameters.Add("@Count", OdbcType.Int).Value = 1;
+					cmd.Parameters.Add("@WindowStart", OdbcType.DateTime).Value = DateTime.Now;
+					cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+					cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+					if (cmd.ExecuteNonQuery() < 0)
+						throw new ProviderException("Unable to update failure count and window start.");
+				}
+				else {
+					if (failureCount++ >= MaxInvalidPasswordAttempts) {
+						// Password attempts have exceeded the failure threshold. Lock out
+						// the user.
+
+						cmd.CommandText = "UPDATE Users " +
+												"  SET IsLockedOut = ?, LastLockedOutDate = ? " +
+												"  WHERE Username = ? AND ApplicationName = ?";
+
+						cmd.Parameters.Clear();
+
+						cmd.Parameters.Add("@IsLockedOut", OdbcType.Bit).Value = true;
+						cmd.Parameters.Add("@LastLockedOutDate", OdbcType.DateTime).Value = DateTime.Now;
+						cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+						cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+						if (cmd.ExecuteNonQuery() < 0)
+							throw new ProviderException("Unable to lock out user.");
+					}
+					else {
+						// Password attempts have not exceeded the failure threshold. Update
+						// the failure counts. Leave the window the same.
+
+						if (failureType == "password")
+							cmd.CommandText = "UPDATE Users " +
+													"  SET FailedPasswordAttemptCount = ?" +
+													"  WHERE Username = ? AND ApplicationName = ?";
+
+						if (failureType == "passwordAnswer")
+							cmd.CommandText = "UPDATE Users " +
+													"  SET FailedPasswordAnswerAttemptCount = ?" +
+													"  WHERE Username = ? AND ApplicationName = ?";
+
+						cmd.Parameters.Clear();
+
+						cmd.Parameters.Add("@Count", OdbcType.Int).Value = failureCount;
+						cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
+						cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
+
+						if (cmd.ExecuteNonQuery() < 0)
+							throw new ProviderException("Unable to update failure count.");
+					}
+				}
+			}
+			catch (OdbcException e) {
+				if (WriteExceptionsToEventLog) {
+					WriteToEventLog(e, "UpdateFailureCount");
+
+					throw new ProviderException(exceptionMessage);
+				}
+				else {
+					throw e;
+				}
+			}
+			finally {
+				if (reader != null) { reader.Close(); }
+				conn.Close();
+			}
+		}
 
 
 		//
@@ -1173,6 +1327,28 @@ namespace Ludopoli.MongoMember
 		//   Compares password values based on the MembershipPasswordFormat.
 		//
 
+		private bool CheckPassword(string password, string dbpassword)
+		{
+			string pass1 = password;
+			string pass2 = dbpassword;
+
+			switch (PasswordFormat) {
+				case MembershipPasswordFormat.Encrypted:
+					pass2 = UnEncodePassword(dbpassword);
+					break;
+				case MembershipPasswordFormat.Hashed:
+					pass1 = EncodePassword(password);
+					break;
+				default:
+					break;
+			}
+
+			if (pass1 == pass2) {
+				return true;
+			}
+
+			return false;
+		}
 
 
 		//
@@ -1182,9 +1358,6 @@ namespace Ludopoli.MongoMember
 
 		private string EncodePassword(string password)
 		{
-			if (password == null)
-				return null;
-
 			string encodedPassword = password;
 
 			switch (PasswordFormat) {
@@ -1259,7 +1432,7 @@ namespace Ludopoli.MongoMember
 			OdbcCommand cmd = new OdbcCommand("SELECT Count(*) FROM Users " +
 						 "WHERE Username LIKE ? AND ApplicationName = ?", conn);
 			cmd.Parameters.Add("@UsernameSearch", OdbcType.VarChar, 255).Value = usernameToMatch;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
+			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = pApplicationName;
 
 			MembershipUserCollection users = new MembershipUserCollection();
 
@@ -1403,6 +1576,5 @@ namespace Ludopoli.MongoMember
 			log.WriteEntry(message);
 		}
 
-		#endregion
 	}
 }
