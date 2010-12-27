@@ -24,8 +24,10 @@ namespace Ludopoli.MongoMember
 
 		public override MembershipUser CreateUser(string username, string password, string email, string passwordQuestion, string passwordAnswer, bool isApproved, object providerUserKey, out MembershipCreateStatus status)
 		{
-			var args = new ValidatePasswordEventArgs(username, password, true); OnValidatingPassword(args);
-			if (args.Cancel) { status = MembershipCreateStatus.InvalidPassword; return null; }
+			if (ValidPassword(username, password) == false) {
+				status = MembershipCreateStatus.InvalidPassword;
+				return null;
+			}
 
 			if (RequiresUniqueEmail && GetUserNameByEmail(email) != "") {
 				status = MembershipCreateStatus.DuplicateEmail;
@@ -92,6 +94,22 @@ namespace Ludopoli.MongoMember
 			Db.Save(usr);
 
 			return valid;
+		}
+
+		public override bool ChangePassword(string username, string oldPwd, string newPwd)
+		{
+			if (ValidateUser(username, oldPwd) == false)
+				return false;
+
+			if (ValidPassword(username, newPwd) == false)
+				throw new MembershipPasswordException("Change password canceled due to new password validation failure.");
+
+			var usr = ByUserName(username);
+			usr.Password = EncodePassword(newPwd);
+			usr.LastPasswordChangedDate = DateTime.Now;
+			Db.Save(usr);
+
+			return true;
 		}
 
 		public override string ApplicationName { get; set; }
@@ -223,6 +241,14 @@ namespace Ludopoli.MongoMember
 			}
 
 			return false;
+		}
+
+		bool ValidPassword(string username, string password)
+		{
+			var args = new ValidatePasswordEventArgs(username, password, true);
+			OnValidatingPassword(args);
+			var invalid = args.Cancel;
+			return !invalid;
 		}
 
 		Usr ByUserName(string username)
@@ -472,73 +498,6 @@ namespace Ludopoli.MongoMember
 		{
 			get { return pPasswordStrengthRegularExpression; }
 		}
-
-		//
-		// System.Web.Security.MembershipProvider methods.
-		//
-
-		//
-		// MembershipProvider.ChangePassword
-		//
-
-		public override bool ChangePassword(string username, string oldPwd, string newPwd)
-		{
-			if (!ValidateUser(username, oldPwd))
-				return false;
-
-
-			ValidatePasswordEventArgs args =
-			  new ValidatePasswordEventArgs(username, newPwd, true);
-
-			OnValidatingPassword(args);
-
-			if (args.Cancel)
-				if (args.FailureInformation != null)
-					throw args.FailureInformation;
-				else
-					throw new MembershipPasswordException("Change password canceled due to new password validation failure.");
-
-
-			OdbcConnection conn = new OdbcConnection(connectionString);
-			OdbcCommand cmd = new OdbcCommand("UPDATE Users " +
-					  " SET Password = ?, LastPasswordChangedDate = ? " +
-					  " WHERE Username = ? AND ApplicationName = ?", conn);
-
-			cmd.Parameters.Add("@Password", OdbcType.VarChar, 255).Value = EncodePassword(newPwd);
-			cmd.Parameters.Add("@LastPasswordChangedDate", OdbcType.DateTime).Value = DateTime.Now;
-			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-
-			int rowsAffected = 0;
-
-			try {
-				conn.Open();
-
-				rowsAffected = cmd.ExecuteNonQuery();
-			}
-			catch (OdbcException e) {
-				if (WriteExceptionsToEventLog) {
-					WriteToEventLog(e, "ChangePassword");
-
-					throw new ProviderException(exceptionMessage);
-				}
-				else {
-					throw e;
-				}
-			}
-			finally {
-				conn.Close();
-			}
-
-			if (rowsAffected > 0) {
-				return true;
-			}
-
-			return false;
-		}
-
-
 
 		//
 		// MembershipProvider.ChangePasswordQuestionAndAnswer
