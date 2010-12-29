@@ -115,7 +115,7 @@ namespace Ludopoli.MongoMember
 		public override bool DeleteUser(string username, bool deleteAllRelatedData)
 		{
 			var usr = ByUserName(username);
-			Db.Delete(usr);
+			Db.Delete<Usr>(usr);
 			return true;
 		}
 

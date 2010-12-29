@@ -43,10 +43,10 @@ namespace Ludopoli.MongoMember
 			}
 		}
 
-		public void Delete(object item)
+		public void Delete<T>(T item)
 		{
 			using (var mongo = connect) {
-				collection(mongo, item).Delete(item);
+				mongo.GetCollection<T>().Delete<T>(item);
 				checkError(mongo);
 			}
 		}
