@@ -28,5 +28,10 @@ namespace Ludopoli.MongoMember
 		public DateTime FailedPasswordAttemptWindowStart { get; set; }
 		public int FailedPasswordAnswerAttemptCount { get; set; }
 		public DateTime FailedPasswordAnswerAttemptWindowStart { get; set; }
+
+		public override string ToString()
+		{
+			return Username + " (" + Email + ") ";
+		}
 	}
 }

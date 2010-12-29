@@ -112,6 +112,26 @@ namespace Ludopoli.MongoMember
 			return true;
 		}
 
+		public override bool DeleteUser(string username, bool deleteAllRelatedData)
+		{
+			var usr = ByUserName(username);
+			Db.Delete(usr);
+			return true;
+		}
+
+		public override MembershipUserCollection GetAllUsers(int pageIndex, int pageSize, out int totalRecords)
+		{
+			var all = Db.All<Usr>().Where(u => u.ApplicationName == ApplicationName);
+			var usrs = all.Skip(pageIndex * pageSize).Take(pageSize - 1);
+
+			var res = new MembershipUserCollection();
+			foreach (var usr in usrs)
+				res.Add(ToMembershipUser(usr));
+
+			totalRecords = all.Count();
+			return res;
+		}
+
 		public override string ApplicationName { get; set; }
 		public override int PasswordAttemptWindow { get { return pPasswordAttemptWindow; } }
 		public override int MaxInvalidPasswordAttempts { get { return pMaxInvalidPasswordAttempts; } }
@@ -126,11 +146,11 @@ namespace Ludopoli.MongoMember
 				throw new ArgumentNullException("config");
 
 			if (name == null || name.Length == 0)
-				name = "OdbcMembershipProvider";
+				name = "MongoMember";
 
 			if (String.IsNullOrEmpty(config["description"])) {
 				config.Remove("description");
-				config.Add("description", "Sample ODBC Membership provider");
+				config.Add("description", "MongoDB Membership provider");
 			}
 
 			// Initialize the abstract base class.
@@ -550,124 +570,6 @@ namespace Ludopoli.MongoMember
 			return false;
 		}
 
-
-
-		//
-		// MembershipProvider.CreateUser
-		//
-
-
-
-
-		//
-		// MembershipProvider.DeleteUser
-		//
-
-		public override bool DeleteUser(string username, bool deleteAllRelatedData)
-		{
-			OdbcConnection conn = new OdbcConnection(connectionString);
-			OdbcCommand cmd = new OdbcCommand("DELETE FROM Users " +
-					  " WHERE Username = ? AND Applicationname = ?", conn);
-
-			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-			int rowsAffected = 0;
-
-			try {
-				conn.Open();
-
-				rowsAffected = cmd.ExecuteNonQuery();
-
-				if (deleteAllRelatedData) {
-					// Process commands to delete all data for the user in the database.
-				}
-			}
-			catch (OdbcException e) {
-				if (WriteExceptionsToEventLog) {
-					WriteToEventLog(e, "DeleteUser");
-
-					throw new ProviderException(exceptionMessage);
-				}
-				else {
-					throw e;
-				}
-			}
-			finally {
-				conn.Close();
-			}
-
-			if (rowsAffected > 0)
-				return true;
-
-			return false;
-		}
-
-
-
-		//
-		// MembershipProvider.GetAllUsers
-		//
-
-		public override MembershipUserCollection GetAllUsers(int pageIndex, int pageSize, out int totalRecords)
-		{
-			OdbcConnection conn = new OdbcConnection(connectionString);
-			OdbcCommand cmd = new OdbcCommand("SELECT Count(*) FROM Users " +
-														 "WHERE ApplicationName = ?", conn);
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-			MembershipUserCollection users = new MembershipUserCollection();
-
-			OdbcDataReader reader = null;
-			totalRecords = 0;
-
-			try {
-				conn.Open();
-				totalRecords = (int)cmd.ExecuteScalar();
-
-				if (totalRecords <= 0) { return users; }
-
-				cmd.CommandText = "SELECT PKID, Username, Email, PasswordQuestion," +
-							" Comment, IsApproved, IsLockedOut, CreationDate, LastLoginDate," +
-							" LastActivityDate, LastPasswordChangedDate, LastLockedOutDate " +
-							" FROM Users " +
-							" WHERE ApplicationName = ? " +
-							" ORDER BY Username Asc";
-
-				reader = cmd.ExecuteReader();
-
-				int counter = 0;
-				int startIndex = pageSize * pageIndex;
-				int endIndex = startIndex + pageSize - 1;
-
-				while (reader.Read()) {
-					if (counter >= startIndex) {
-						MembershipUser u = GetUserFromReader(reader);
-						users.Add(u);
-					}
-
-					if (counter >= endIndex) { cmd.Cancel(); }
-
-					counter++;
-				}
-			}
-			catch (OdbcException e) {
-				if (WriteExceptionsToEventLog) {
-					WriteToEventLog(e, "GetAllUsers ");
-
-					throw new ProviderException(exceptionMessage);
-				}
-				else {
-					throw e;
-				}
-			}
-			finally {
-				if (reader != null) { reader.Close(); }
-				conn.Close();
-			}
-
-			return users;
-		}
 
 
 		//
