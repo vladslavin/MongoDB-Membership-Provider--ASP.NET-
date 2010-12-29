@@ -282,7 +282,7 @@ namespace Ludopoli.MongoMember
 			if (usr == null)
 				return null;
 
-			return new MembershipUser(this.Name, usr.Username, usr.Id, usr.Email,
+			return new MembershipUser(this.Name, usr.Username, usr.Id.ToString(), usr.Email,
 				usr.PasswordQuestion, usr.Comment, usr.IsApproved, usr.IsLockedOut,
 				usr.CreationDate, usr.LastLoginDate, usr.LastActivityDate, usr.LastPasswordChangedDate,
 				usr.LastLockedOutDate
