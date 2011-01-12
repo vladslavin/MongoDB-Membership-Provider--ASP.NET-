@@ -62,7 +62,7 @@ namespace Ludopoli.MongoMember
 			}
 
 			status = MembershipCreateStatus.Success;
-			return u;
+			return GetUser(username, false);
 		}
 
 		public override MembershipUser GetUser(string username, bool userIsOnline)
