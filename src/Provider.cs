@@ -16,14 +16,11 @@ using Norm.Collections;
 using System.Collections.Generic;
 
 
-namespace Ludopoli.MongoMember
-{
-	public class Provider : MembershipProvider
-	{
+namespace Ludopoli.MongoMember {
+	public class Provider : MembershipProvider {
 		#region API
 
-		public override MembershipUser CreateUser(string username, string password, string email, string passwordQuestion, string passwordAnswer, bool isApproved, object providerUserKey, out MembershipCreateStatus status)
-		{
+		public override MembershipUser CreateUser(string username, string password, string email, string passwordQuestion, string passwordAnswer, bool isApproved, object providerUserKey, out MembershipCreateStatus status) {
 			if (ValidPassword(username, password) == false) {
 				status = MembershipCreateStatus.InvalidPassword;
 				return null;
@@ -65,8 +62,7 @@ namespace Ludopoli.MongoMember
 			return GetUser(username, false);
 		}
 
-		public override MembershipUser GetUser(string username, bool userIsOnline)
-		{
+		public override MembershipUser GetUser(string username, bool userIsOnline) {
 			var usr = ByUserName(username);
 
 			if (usr != null && userIsOnline) {
@@ -77,8 +73,7 @@ namespace Ludopoli.MongoMember
 			return ToMembershipUser(usr);
 		}
 
-		public override bool ValidateUser(string username, string password)
-		{
+		public override bool ValidateUser(string username, string password) {
 			var usr = ByUserName(username);
 
 			if (usr == null || usr.IsLockedOut)
@@ -96,8 +91,7 @@ namespace Ludopoli.MongoMember
 			return valid;
 		}
 
-		public override bool ChangePassword(string username, string oldPwd, string newPwd)
-		{
+		public override bool ChangePassword(string username, string oldPwd, string newPwd) {
 			if (ValidateUser(username, oldPwd) == false)
 				return false;
 
@@ -112,15 +106,13 @@ namespace Ludopoli.MongoMember
 			return true;
 		}
 
-		public override bool DeleteUser(string username, bool deleteAllRelatedData)
-		{
+		public override bool DeleteUser(string username, bool deleteAllRelatedData) {
 			var usr = ByUserName(username);
 			Db.Delete<Usr>(usr);
 			return true;
 		}
 
-		public override MembershipUserCollection GetAllUsers(int pageIndex, int pageSize, out int totalRecords)
-		{
+		public override MembershipUserCollection GetAllUsers(int pageIndex, int pageSize, out int totalRecords) {
 			var all = Db.All<Usr>().Where(u => u.ApplicationName == ApplicationName);
 			var usrs = all.Skip(pageIndex * pageSize).Take(pageSize - 1);
 
@@ -132,12 +124,48 @@ namespace Ludopoli.MongoMember
 			return res;
 		}
 
+		public override string ResetPassword(string username, string answer) {
+			if (!EnablePasswordReset) {
+				throw new NotSupportedException("Password reset is not enabled.");
+			}
+
+			if (answer == null && RequiresQuestionAndAnswer) {
+				Db.Save(UpdateFailureCount(ByUserName(username), FailurePasswordAnswer));
+				throw new ProviderException("Password answer required for password reset.");
+			}
+
+			string newPassword = Membership.GeneratePassword(newPasswordLength, MinRequiredNonAlphanumericCharacters);
+
+			if (ValidPassword(username, newPassword) == false)
+				throw new MembershipPasswordException("Reset password canceled due to password validation failure.");
+
+			var usr = ByUserName(username);
+
+			// User is locked ?
+			if (usr.IsLockedOut)
+				throw new MembershipPasswordException("The supplied user is locked out.");
+
+			// Todo it
+			//if (RequiresQuestionAndAnswer && !CheckPassword(answer, passwordAnswer))
+			//{
+			//   UpdateFailureCount(username, "passwordAnswer");
+
+			//   throw new MembershipPasswordException("Incorrect password answer.");
+			//}
+
+			usr.Password = EncodePassword(newPassword);
+			usr.LastPasswordChangedDate = DateTime.Now;
+
+			Db.Save(usr);
+
+			return newPassword;
+		}
+
 		public override string ApplicationName { get; set; }
 		public override int PasswordAttemptWindow { get { return pPasswordAttemptWindow; } }
 		public override int MaxInvalidPasswordAttempts { get { return pMaxInvalidPasswordAttempts; } }
 
-		public override void Initialize(string name, NameValueCollection config)
-		{
+		public override void Initialize(string name, NameValueCollection config) {
 			//
 			// Initialize values from web.config.
 			//
@@ -214,8 +242,7 @@ namespace Ludopoli.MongoMember
 		int pPasswordAttemptWindow;
 		int pMaxInvalidPasswordAttempts;
 
-		void UpdateFailureCount(Usr usr, string failureType = FailurePassword)
-		{
+		Usr UpdateFailureCount(Usr usr, string failureType = FailurePassword) {
 			var getFailureCount = new Func<int>(() => failureType == FailurePasswordAnswer ? usr.FailedPasswordAnswerAttemptCount : usr.FailedPasswordAttemptCount);
 			var setFailureCount = new Action<int>((val) => { if (failureType == FailurePasswordAnswer) { usr.FailedPasswordAnswerAttemptCount = val; } else { usr.FailedPasswordAttemptCount = val; } });
 			var getWindowStart = new Func<DateTime>(() => failureType == FailurePasswordAnswer ? usr.FailedPasswordAnswerAttemptWindowStart : usr.FailedPasswordAttemptWindowStart);
@@ -238,10 +265,11 @@ namespace Ludopoli.MongoMember
 					setFailureCount(nextFailureCount);
 				}
 			}
+
+			return usr;
 		}
 
-		bool CheckPassword(string password, string dbpassword)
-		{
+		bool CheckPassword(string password, string dbpassword) {
 			string pass1 = password;
 			string pass2 = dbpassword;
 
@@ -263,22 +291,19 @@ namespace Ludopoli.MongoMember
 			return false;
 		}
 
-		bool ValidPassword(string username, string password)
-		{
+		bool ValidPassword(string username, string password) {
 			var args = new ValidatePasswordEventArgs(username, password, true);
 			OnValidatingPassword(args);
 			var invalid = args.Cancel;
 			return !invalid;
 		}
 
-		Usr ByUserName(string username)
-		{
+		Usr ByUserName(string username) {
 			var usr = Db.SingleOrDef<Usr>(u => u.Username == username && u.ApplicationName == ApplicationName);
 			return usr;
 		}
 
-		MembershipUser ToMembershipUser(Usr usr)
-		{
+		MembershipUser ToMembershipUser(Usr usr) {
 			if (usr == null)
 				return null;
 
@@ -292,8 +317,7 @@ namespace Ludopoli.MongoMember
 		#endregion
 
 		#region From MSDN example
-		void UpdateFailureCount(string username, string failureType)
-		{
+		void UpdateFailureCount(string username, string failureType) {
 			OdbcConnection conn = new OdbcConnection(connectionString);
 			OdbcCommand cmd = new OdbcCommand("SELECT FailedPasswordAttemptCount, " +
 														 "  FailedPasswordAttemptWindowStart, " +
@@ -435,8 +459,7 @@ namespace Ludopoli.MongoMember
 
 		private bool pWriteExceptionsToEventLog;
 
-		public bool WriteExceptionsToEventLog
-		{
+		public bool WriteExceptionsToEventLog {
 			get { return pWriteExceptionsToEventLog; }
 			set { pWriteExceptionsToEventLog = value; }
 		}
@@ -445,8 +468,7 @@ namespace Ludopoli.MongoMember
 		// A helper function to retrieve config values from the configuration file.
 		//
 
-		private string GetConfigValue(string configValue, string defaultValue)
-		{
+		private string GetConfigValue(string configValue, string defaultValue) {
 			if (String.IsNullOrEmpty(configValue))
 				return defaultValue;
 
@@ -466,26 +488,22 @@ namespace Ludopoli.MongoMember
 		private MembershipPasswordFormat pPasswordFormat;
 
 
-		public override bool EnablePasswordReset
-		{
+		public override bool EnablePasswordReset {
 			get { return pEnablePasswordReset; }
 		}
 
 
-		public override bool EnablePasswordRetrieval
-		{
+		public override bool EnablePasswordRetrieval {
 			get { return pEnablePasswordRetrieval; }
 		}
 
 
-		public override bool RequiresQuestionAndAnswer
-		{
+		public override bool RequiresQuestionAndAnswer {
 			get { return pRequiresQuestionAndAnswer; }
 		}
 
 
-		public override bool RequiresUniqueEmail
-		{
+		public override bool RequiresUniqueEmail {
 			get { return pRequiresUniqueEmail; }
 		}
 
@@ -493,29 +511,25 @@ namespace Ludopoli.MongoMember
 
 
 
-		public override MembershipPasswordFormat PasswordFormat
-		{
+		public override MembershipPasswordFormat PasswordFormat {
 			get { return pPasswordFormat; }
 		}
 
 		private int pMinRequiredNonAlphanumericCharacters;
 
-		public override int MinRequiredNonAlphanumericCharacters
-		{
+		public override int MinRequiredNonAlphanumericCharacters {
 			get { return pMinRequiredNonAlphanumericCharacters; }
 		}
 
 		private int pMinRequiredPasswordLength;
 
-		public override int MinRequiredPasswordLength
-		{
+		public override int MinRequiredPasswordLength {
 			get { return pMinRequiredPasswordLength; }
 		}
 
 		private string pPasswordStrengthRegularExpression;
 
-		public override string PasswordStrengthRegularExpression
-		{
+		public override string PasswordStrengthRegularExpression {
 			get { return pPasswordStrengthRegularExpression; }
 		}
 
@@ -526,8 +540,7 @@ namespace Ludopoli.MongoMember
 		public override bool ChangePasswordQuestionAndAnswer(string username,
 						  string password,
 						  string newPwdQuestion,
-						  string newPwdAnswer)
-		{
+						  string newPwdAnswer) {
 			if (!ValidateUser(username, password))
 				return false;
 
@@ -576,8 +589,7 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.GetNumberOfUsersOnline
 		//
 
-		public override int GetNumberOfUsersOnline()
-		{
+		public override int GetNumberOfUsersOnline() {
 
 			TimeSpan onlineSpan = new TimeSpan(0, System.Web.Security.Membership.UserIsOnlineTimeWindow, 0);
 			DateTime compareTime = DateTime.Now.Subtract(onlineSpan);
@@ -619,8 +631,7 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.GetPassword
 		//
 
-		public override string GetPassword(string username, string answer)
-		{
+		public override string GetPassword(string username, string answer) {
 			if (!EnablePasswordRetrieval) {
 				throw new ProviderException("Password Retrieval Not Enabled.");
 			}
@@ -695,8 +706,7 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.GetUser(object, bool)
 		//
 
-		public override MembershipUser GetUser(object providerUserKey, bool userIsOnline)
-		{
+		public override MembershipUser GetUser(object providerUserKey, bool userIsOnline) {
 			OdbcConnection conn = new OdbcConnection(connectionString);
 			OdbcCommand cmd = new OdbcCommand("SELECT PKID, Username, Email, PasswordQuestion," +
 					" Comment, IsApproved, IsLockedOut, CreationDate, LastLoginDate," +
@@ -757,8 +767,7 @@ namespace Ludopoli.MongoMember
 		// MembershipUser.GetUser implementation.
 		//
 
-		private MembershipUser GetUserFromReader(OdbcDataReader reader)
-		{
+		private MembershipUser GetUserFromReader(OdbcDataReader reader) {
 			object providerUserKey = reader.GetValue(0);
 			string username = reader.GetString(1);
 			string email = reader.GetString(2);
@@ -808,8 +817,7 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.UnlockUser
 		//
 
-		public override bool UnlockUser(string username)
-		{
+		public override bool UnlockUser(string username) {
 			OdbcConnection conn = new OdbcConnection(connectionString);
 			OdbcCommand cmd = new OdbcCommand("UPDATE Users " +
 														 " SET IsLockedOut = False, LastLockedOutDate = ? " +
@@ -851,8 +859,7 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.GetUserNameByEmail
 		//
 
-		public override string GetUserNameByEmail(string email)
-		{
+		public override string GetUserNameByEmail(string email) {
 			OdbcConnection conn = new OdbcConnection(connectionString);
 			OdbcCommand cmd = new OdbcCommand("SELECT Username" +
 					" FROM Users WHERE Email = ? AND ApplicationName = ?", conn);
@@ -890,113 +897,13 @@ namespace Ludopoli.MongoMember
 
 
 
-		//
-		// MembershipProvider.ResetPassword
-		//
-
-		public override string ResetPassword(string username, string answer)
-		{
-			if (!EnablePasswordReset) {
-				throw new NotSupportedException("Password reset is not enabled.");
-			}
-
-			if (answer == null && RequiresQuestionAndAnswer) {
-				UpdateFailureCount(username, "passwordAnswer");
-
-				throw new ProviderException("Password answer required for password reset.");
-			}
-
-			string newPassword =
-			  System.Web.Security.Membership.GeneratePassword(newPasswordLength, MinRequiredNonAlphanumericCharacters);
-
-
-			ValidatePasswordEventArgs args =
-			  new ValidatePasswordEventArgs(username, newPassword, true);
-
-			OnValidatingPassword(args);
-
-			if (args.Cancel)
-				if (args.FailureInformation != null)
-					throw args.FailureInformation;
-				else
-					throw new MembershipPasswordException("Reset password canceled due to password validation failure.");
-
-
-			OdbcConnection conn = new OdbcConnection(connectionString);
-			OdbcCommand cmd = new OdbcCommand("SELECT PasswordAnswer, IsLockedOut FROM Users " +
-					" WHERE Username = ? AND ApplicationName = ?", conn);
-
-			cmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-			cmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-			int rowsAffected = 0;
-			string passwordAnswer = "";
-			OdbcDataReader reader = null;
-
-			try {
-				conn.Open();
-
-				reader = cmd.ExecuteReader(CommandBehavior.SingleRow);
-
-				if (reader.HasRows) {
-					reader.Read();
-
-					if (reader.GetBoolean(1))
-						throw new MembershipPasswordException("The supplied user is locked out.");
-
-					passwordAnswer = reader.GetString(0);
-				}
-				else {
-					throw new MembershipPasswordException("The supplied user name is not found.");
-				}
-
-				if (RequiresQuestionAndAnswer && !CheckPassword(answer, passwordAnswer)) {
-					UpdateFailureCount(username, "passwordAnswer");
-
-					throw new MembershipPasswordException("Incorrect password answer.");
-				}
-
-				OdbcCommand updateCmd = new OdbcCommand("UPDATE Users " +
-					 " SET Password = ?, LastPasswordChangedDate = ?" +
-					 " WHERE Username = ? AND ApplicationName = ? AND IsLockedOut = False", conn);
-
-				updateCmd.Parameters.Add("@Password", OdbcType.VarChar, 255).Value = EncodePassword(newPassword);
-				updateCmd.Parameters.Add("@LastPasswordChangedDate", OdbcType.DateTime).Value = DateTime.Now;
-				updateCmd.Parameters.Add("@Username", OdbcType.VarChar, 255).Value = username;
-				updateCmd.Parameters.Add("@ApplicationName", OdbcType.VarChar, 255).Value = ApplicationName;
-
-				rowsAffected = updateCmd.ExecuteNonQuery();
-			}
-			catch (OdbcException e) {
-				if (WriteExceptionsToEventLog) {
-					WriteToEventLog(e, "ResetPassword");
-
-					throw new ProviderException(exceptionMessage);
-				}
-				else {
-					throw e;
-				}
-			}
-			finally {
-				if (reader != null) { reader.Close(); }
-				conn.Close();
-			}
-
-			if (rowsAffected > 0) {
-				return newPassword;
-			}
-			else {
-				throw new MembershipPasswordException("User not found, or user is locked out. Password not Reset.");
-			}
-		}
 
 
 		//
 		// MembershipProvider.UpdateUser
 		//
 
-		public override void UpdateUser(MembershipUser user)
-		{
+		public override void UpdateUser(MembershipUser user) {
 			OdbcConnection conn = new OdbcConnection(connectionString);
 			OdbcCommand cmd = new OdbcCommand("UPDATE Users " +
 					  " SET Email = ?, Comment = ?," +
@@ -1047,8 +954,7 @@ namespace Ludopoli.MongoMember
 		//   Encrypts, Hashes, or leaves the password clear based on the PasswordFormat.
 		//
 
-		private string EncodePassword(string password)
-		{
+		private string EncodePassword(string password) {
 			if (password == null)
 				return null;
 
@@ -1080,8 +986,7 @@ namespace Ludopoli.MongoMember
 		//   Decrypts or leaves the password clear based on the PasswordFormat.
 		//
 
-		private string UnEncodePassword(string encodedPassword)
-		{
+		private string UnEncodePassword(string encodedPassword) {
 			string password = encodedPassword;
 
 			switch (PasswordFormat) {
@@ -1106,8 +1011,7 @@ namespace Ludopoli.MongoMember
 		// key values from the configuration.
 		//
 
-		private byte[] HexToByte(string hexString)
-		{
+		private byte[] HexToByte(string hexString) {
 			byte[] returnBytes = new byte[hexString.Length / 2];
 			for (int i = 0; i < returnBytes.Length; i++)
 				returnBytes[i] = Convert.ToByte(hexString.Substring(i * 2, 2), 16);
@@ -1119,8 +1023,7 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.FindUsersByName
 		//
 
-		public override MembershipUserCollection FindUsersByName(string usernameToMatch, int pageIndex, int pageSize, out int totalRecords)
-		{
+		public override MembershipUserCollection FindUsersByName(string usernameToMatch, int pageIndex, int pageSize, out int totalRecords) {
 
 			OdbcConnection conn = new OdbcConnection(connectionString);
 			OdbcCommand cmd = new OdbcCommand("SELECT Count(*) FROM Users " +
@@ -1185,8 +1088,7 @@ namespace Ludopoli.MongoMember
 		// MembershipProvider.FindUsersByEmail
 		//
 
-		public override MembershipUserCollection FindUsersByEmail(string emailToMatch, int pageIndex, int pageSize, out int totalRecords)
-		{
+		public override MembershipUserCollection FindUsersByEmail(string emailToMatch, int pageIndex, int pageSize, out int totalRecords) {
 			OdbcConnection conn = new OdbcConnection(connectionString);
 			OdbcCommand cmd = new OdbcCommand("SELECT Count(*) FROM Users " +
 														 "WHERE Email LIKE ? AND ApplicationName = ?", conn);
@@ -1257,8 +1159,7 @@ namespace Ludopoli.MongoMember
 		// thrown by the caller.
 		//
 
-		private void WriteToEventLog(Exception e, string action)
-		{
+		private void WriteToEventLog(Exception e, string action) {
 			EventLog log = new EventLog();
 			log.Source = eventSource;
 			log.Log = eventLog;
