@@ -5,15 +5,19 @@ using System.Text;
 using Norm;
 using Norm.Collections;
 using System.Linq.Expressions;
+using System.Configuration;
 
 namespace Ludopoli.MongoMember
 {
 	public class Mongo
 	{
+		public static string ConnectionString = string.Empty;
+
 		public static Mongo Create(string connection)
 		{
 			var res = new Mongo();
 			res.connection = connection;
+			Mongo.ConnectionString = connection;
 			return res;
 		}
 

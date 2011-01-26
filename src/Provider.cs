@@ -215,12 +215,13 @@ namespace Ludopoli.MongoMember {
 					throw new ProviderException("Password format not supported.");
 			}
 
-			var conectionStr = ConfigurationManager.ConnectionStrings[config["connectionStringName"]];
+			string conectionStr = string.IsNullOrWhiteSpace(Mongo.ConnectionString) ? ConfigurationManager.ConnectionStrings[config["connectionStringName"]].ConnectionString
+				: Mongo.ConnectionString;
 
-			if (conectionStr == null || string.IsNullOrWhiteSpace(conectionStr.ConnectionString))
+			if (string.IsNullOrWhiteSpace(conectionStr))
 				throw new ProviderException("ConnectionStringName string cannot be blank.");
 
-			Db = Mongo.Create(conectionStr.ConnectionString);
+			Db = Mongo.Create(conectionStr);
 
 			// Get encryption and decryption key information from the configuration.
 			var cfg = WebConfigurationManager.OpenWebConfiguration(System.Web.Hosting.HostingEnvironment.ApplicationVirtualPath);
